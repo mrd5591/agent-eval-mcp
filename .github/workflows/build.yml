@@ -17,10 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # setup-uv's python-version sets UV_PYTHON, so `uv venv` below actually
-      # builds against the matrix version. Installing with `--system` instead
-      # would silently use the runner's own interpreter, which both defeats the
-      # matrix and trips PEP 668 on Ubuntu.
+      # Passing python-version here makes setup-uv install that interpreter,
+      # create the .venv and export VIRTUAL_ENV, so the steps below build
+      # against the matrix version. Do not add an explicit `uv venv`: the
+      # environment already exists and uv exits non-zero rather than reusing it.
+      # Installing with `--system` instead would silently use the runner's own
+      # interpreter, defeating the matrix and tripping PEP 668 on Ubuntu.
       - name: Install uv and Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@v5
         with:
@@ -28,9 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install
-        run: |
-          uv venv
-          uv pip install -e ".[dev]"
+        run: uv pip install -e ".[dev]"
 
       # The coverage floor lives in pyproject.toml, so it is the same number
       # locally and in CI. A gate that only exists in one place is a gate that
