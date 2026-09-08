@@ -31,7 +31,7 @@ packages = ["src/agent_eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --cov=agent_eval --cov-report=term-missing --cov-fail-under=90"
+addopts = "-q --cov=agent_eval --cov-report=term-missing --cov-fail-under=95"
 pythonpath = ["src"]
 
 [tool.ruff]

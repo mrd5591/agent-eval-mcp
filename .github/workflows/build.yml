@@ -27,7 +27,10 @@ jobs:
       - name: Install
         run: uv pip install -e ".[dev]"
 
+      # Without an explicit bash shell, windows runners use pwsh, whose exit status is the LAST
+      # command's - a failing `ruff check` would be a silent green on half the matrix.
       - name: Lint and format
+        shell: bash
         run: |
           uv run ruff check .
           uv run ruff format --check .

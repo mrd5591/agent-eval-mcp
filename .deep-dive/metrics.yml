@@ -1,0 +1,49 @@
+metrics:
+  schema_version: "1.0"
+  last_updated: "2026-09-08T14:38:09Z"
+  runs:
+    - run_id: "2026-09-08T14:38:09Z"
+      scope: "full"
+      mode: "full"
+      duration_minutes: 50
+      findings_by_severity:
+        critical: 0
+        high: 6
+        medium: 14
+        low: 14
+      findings_by_module:
+        transcript.py: { critical: 0, high: 2 }
+        metrics.py: { critical: 0, high: 2 }
+        mcp_server.py: { critical: 0, high: 0 }
+        report.py: { critical: 0, high: 0 }
+        build.yml: { critical: 0, high: 1 }
+        pyproject.toml: { critical: 0, high: 1 }
+      findings_by_category:
+        privacy: 4
+        gate_false_green: 2
+        silent_fallback: 3
+        detection_accuracy: 5
+        test_vacuity: 6
+        documentation_accuracy: 7
+        dead_or_unread_state: 4
+        boundary_conditions: 3
+      fixes_attempted: 9
+      fixes_successful: 9
+      false_positives_critical: 0
+      # No agent finding was rejected outright. Two FRAMINGS were corrected at the verify
+      # step: the heredoc leak was reported as contradicting the README, but README:112-114
+      # already discloses the command echo, so the real defects were the missing cap and the
+      # underspecified disclosure. And resolve_root("") was re-rated High from Critical - it
+      # exposes project paths and cost metadata, not transcript content.
+      framings_corrected: 2
+      ci_passed: true
+      ledger_health:
+        open_before: 0
+        open_after: 6
+        net_intake: 6
+        ceiling: 20
+        rulings_open: 3
+        closed_as: { fixed: 9, below_the_line: 3, default_applied: 0, aged_out: 0, refuted: 0 }
+      # net_intake is +6 on a first run against an empty ledger, the one case the zero-intake
+      # rule cannot bind: there was nothing to displace. One entry is class money. Later
+      # passes must hold at or below 6.

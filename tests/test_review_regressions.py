@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import pathlib
 import sys
 
 import pytest
@@ -13,8 +14,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 from agent_eval import mcp_server
 from agent_eval.cli import main
 from agent_eval.metrics import detect_loops, evaluate, gate_events, suite_events
-from agent_eval.report import render_json, render_text
-from agent_eval.transcript import iter_session_files, parse_session, read_cost
+from agent_eval.report import _duration, render_json, render_text
+from agent_eval.transcript import (
+    COMMAND_SNIPPET_CHARS,
+    iter_session_files,
+    parse_session,
+    read_cost,
+    resolve_root,
+)
 
 from . import fixtures as fx
 from .test_mcp_server import payload
@@ -295,3 +302,102 @@ def test_cli_and_mcp_session_rows_have_the_same_shape(tmp_path, capsys):
     mcp_row = mcp_server.list_sessions(root=str(tmp_path))[0]
 
     assert cli_row == mcp_row
+
+
+# --- regressions from the 2026-09-08 review ---------------------------------
+
+NL = chr(10)
+INLINE_BODY = "SECRET_LINE=" + "x" * 4000 + "=TAIL_MARKER"
+
+
+def _repeated_bash(path, command, times=3, start=0):
+    records = []
+    for i in range(start, start + times):
+        records.append(fx.tool_use("Bash", {"command": command}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "ok", uuid=f"r{i}"))
+    return records
+
+
+def test_echoed_command_is_capped_so_an_inline_body_cannot_fill_a_finding(tmp_path):
+    command = f"cat > /repo/.env <<'EOF'{NL}{INLINE_BODY}{NL}EOF"
+    records = _repeated_bash(tmp_path, command)
+    session = parse_session(fx.write_transcript(tmp_path / "s.jsonl", records))
+
+    loops = detect_loops(session, threshold=3)
+
+    assert len(loops) == 1
+    assert len(loops[0].signature) < COMMAND_SNIPPET_CHARS + 64
+    assert "TAIL_MARKER" not in render_json(evaluate(session))
+    assert "TAIL_MARKER" not in render_text(evaluate(session))
+
+
+def test_two_long_commands_sharing_a_prefix_stay_distinct(tmp_path):
+    prefix = "echo " + "x" * COMMAND_SNIPPET_CHARS
+    records = _repeated_bash(tmp_path, f"{prefix} alpha")
+    records += _repeated_bash(tmp_path, f"{prefix} beta", start=3)
+    session = parse_session(fx.write_transcript(tmp_path / "s.jsonl", records))
+
+    loops = detect_loops(session, threshold=3)
+
+    assert len(loops) == 2
+    assert loops[0].signature != loops[1].signature
+
+
+def test_an_empty_root_is_an_error_not_the_real_transcript_archive():
+    with pytest.raises(NotADirectoryError):
+        resolve_root("")
+    with pytest.raises(NotADirectoryError):
+        resolve_root("   ")
+
+
+def test_none_still_asks_for_the_default_root(tmp_path, monkeypatch):
+    default = tmp_path / ".claude" / "projects"
+    default.mkdir(parents=True)
+    monkeypatch.setattr("agent_eval.transcript.DEFAULT_ROOT", default)
+
+    assert resolve_root(None) == default
+
+
+def test_a_negative_limit_is_an_error_not_an_empty_corpus(tmp_path):
+    fx.write_transcript(tmp_path / "p" / "one.jsonl", fx.simple_session())
+
+    with pytest.raises(ToolError):
+        mcp_server.list_sessions(root=str(tmp_path), limit=-1)
+
+    assert mcp_server.list_sessions(root=str(tmp_path), limit=0) == []
+    assert len(mcp_server.list_sessions(root=str(tmp_path), limit=5)) == 1
+
+
+def test_ninety_seconds_is_not_reported_as_two_minutes():
+    assert _duration(90_000) == "90s"
+    assert _duration(119_000) == "119s"
+    assert _duration(120_000) == "2m"
+
+
+def test_a_transcript_vanishing_mid_scan_does_not_kill_the_listing(tmp_path, monkeypatch):
+    fx.write_transcript(tmp_path / "gone.jsonl", fx.simple_session())
+    kept = fx.write_transcript(tmp_path / "kept.jsonl", fx.simple_session())
+    real_stat = pathlib.Path.stat
+
+    def flaky(self, *args, **kwargs):
+        if self.name == "gone.jsonl":
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", flaky)
+
+    assert list(iter_session_files(tmp_path)) == [kept]
+
+
+def test_a_tool_call_repr_carries_neither_its_input_nor_its_result(tmp_path):
+    records = [
+        fx.tool_use("Read", {"file_path": "/repo/.env"}, "t0", uuid="a0"),
+        fx.tool_result("t0", SECRET, uuid="r0"),
+    ]
+    session = parse_session(fx.write_transcript(tmp_path / "s.jsonl", records))
+
+    text = repr(session.tool_calls[0])
+
+    assert "Read" in text
+    assert SECRET not in text
+    assert "/repo/.env" not in text

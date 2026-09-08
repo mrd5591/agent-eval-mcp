@@ -60,8 +60,10 @@ def list_sessions(
         limit: Maximum number of sessions to return.
         include_subagents: Also list the transcripts of subagents a session spawned.
     """
+    if limit < 0:
+        raise ToolError(f"limit must not be negative: {limit}")
     paths = iter_session_files(_root(root), include_subagents=include_subagents)
-    return [summarize_path(path) for path in islice(paths, max(limit, 0))]
+    return [summarize_path(path) for path in islice(paths, limit)]
 
 
 @server.tool()
