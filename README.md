@@ -11,8 +11,10 @@ agent-eval analyze path/to/session.jsonl     # what happened in one
 agent-eval analyze path/to/session.jsonl --json --strict   # for CI
 ```
 
-Companion to [agentic-harness-jvm](https://github.com/mrd5591/agentic-harness-jvm), which gates the
-code an agent writes. This gates the agent's own behaviour.
+One of three. [agentic-harness-jvm](https://github.com/mrd5591/agentic-harness-jvm) gates the code
+an agent writes. [agent-egress-gate](https://github.com/mrd5591/agent-egress-gate) is a
+deny-by-default proxy constraining where a headless agent can reach, with a tamper-evident audit
+log. This one gates the agent's own behaviour.
 
 ---
 
