@@ -27,11 +27,17 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
-      - name: Create the virtual environment
-        run: uv venv
-
-      - name: Install
-        run: uv pip install -e ".[dev]"
+      # `uv sync`, not `uv pip install -e ".[dev]"`. The pip interface is
+      # lock-unaware, so the old step never read uv.lock at all: the lock file
+      # claimed a reproducibility this job did not have, and `ruff>=0.16.6`
+      # floated - a ruff release could turn CI red on an unchanged tree.
+      #
+      # --frozen fails rather than silently re-resolving when the lock and
+      # pyproject.toml disagree, which is the whole point of having a lock.
+      # `uv sync` creates the environment itself, so the explicit `uv venv` that
+      # setup-uv@v7 used to require is gone. Dependabot moves the lock.
+      - name: Install from the lock
+        run: uv sync --all-extras --frozen
 
       # Without an explicit bash shell, windows runners use pwsh, whose exit status is the LAST
       # command's - a failing `ruff check` would be a silent green on half the matrix.
@@ -62,11 +68,14 @@ jobs:
           enable-cache: true
           python-version: "3.11"
 
-      - name: Create the virtual environment
-        run: uv venv
+      # The same lock as the test job, so what is audited is what is tested.
+      # pip-audit itself is a tool rather than a dependency of the project, so it
+      # is the one thing installed outside the lock.
+      - name: Install from the lock
+        run: uv sync --all-extras --frozen
 
-      - name: Install
-        run: uv pip install -e ".[dev]" pip-audit
+      - name: Install pip-audit
+        run: uv pip install pip-audit
 
       - name: Audit dependencies
         run: uv run pip-audit --strict

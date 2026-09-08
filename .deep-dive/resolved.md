@@ -6,6 +6,114 @@ re-file something already closed with evidence.
 
 ## Resolved
 
+### 2026-09-08 - debt pass
+
+All six open entries closed. The pass was unblocked by something the previous one had assumed away:
+the README's "real corpus" is the local `~/.claude/projects` archive, and it is still there. Both
+items that had been deferred as "re-bases a published figure" were therefore measurable rather than
+theoretical, and the figure was re-based on evidence.
+
+**Method, because it is the load-bearing part.** The corpus is *live* - sessions are written to it
+while a sweep runs, and transcripts rotate away over time - so two aggregate sweeps cannot be
+compared: the corpus moves underneath them. Instead the 135,618 distinct shell commands were frozen
+to a file once, then classified by the old implementation and the new one. Same input, two
+implementations, so every difference is attributable to the change.
+
+#### 1. `suite_events` decided green/red from the transport flag alone - FIXED
+
+Deferred at run 1 as a design decision. Ruled and implemented, and the corpus made the ruling
+obvious: **85.2% of the test-run commands in it pipe through `2>&1 | head`** or similar. A shell
+pipeline exits with the status of its *last* command, so `pytest ... | head -30` exits 0 however the
+tests went. The transport flag was not merely unreliable here; it was wrong for the large majority
+of real invocations, which is why the published table showed **zero** red top-level endings.
+
+`looks_failed` now reads the run's own output for failure markers, and is used by `suite_events` for
+both the failure count and the ending. It can only turn a green **red**, never the reverse: a run
+the transport already called failed stays failed, so an unrecognised runner cannot launder a real
+failure into a pass. Nine parametrised failing shapes and six passing ones are pinned, plus the
+end-to-end case through a transcript.
+
+This also retires the entanglement with `ToolCall.result_text`. The field was retained for exactly
+this parsing and read by nothing; the README's privacy section stated that as a debt. It now states
+it as a feature, truthfully.
+
+Effect on the table: top-level green/red **143 / 0 → 137 / 6**; with subagents, **656 / 7 → 646 /
+17**.
+
+#### 2. `is_test_run` missed common real invocations - FIXED
+
+`uvx` moved to `_ONE_WORD_WRAPPERS`: as `("uvx", "")` it required an empty second token, which no
+tokeniser produces, so it never matched anything. `("yarn", "run")` dropped from
+`_TWO_WORD_WRAPPERS`, where it peeled to `["test"]` - not a runner - so yarn was the one package
+manager whose `run test` did not classify; npm and pnpm worked only because they lacked a `run`
+entry and fell through to the old scan-everything match.
+
+#### 3. `is_test_run` matched a subcommand anywhere in the argument list - FIXED
+
+The one deferred as "genuinely breaking-change scope". Matching is now positional, in the subcommand
+*slot*, with three refinements the naive version needed:
+
+- **Multi-target tools** (`mvn`, `gradle`, `make`, `rake`) take a list of goals, all of which run,
+  so any positional may be the test one. `mvn clean install` is a real test run; `go run ./cmd/seed
+  test` is not.
+- **Skip flags** (`-DskipTests`, `-Dmaven.test.skip`, `-x test`, `--collect-only`, `--help`) mean
+  the suite is not run. Deliberately *not* including `-v` or `-n`, which look like query flags but
+  are the two most common pytest invocations there are.
+- **Value-taking flags**, per program and case-sensitive, because a shared set collides: `make -s`
+  is silent and takes no value while `mvn -s` names a settings file. Without this, `make -C test
+  all` read the directory named "test" as a target.
+
+Windows paths now survive tokenising. POSIX `shlex` treats backslash as an escape, so
+`C:\repo\.venv\Scripts\pytest.exe` arrived as `C:repo.venvScriptspytest.exe` and the
+backslash-normalising code in `_program` could never fire - on a project with a Windows CI matrix.
+The escape-free reading is *preferred* rather than forced: disabling the escape makes `\"` read as
+an unbalanced quote, and the naive `split()` fallback loses `;` and `&&`, merging every segment into
+one. Three real test runs regressed that way before the fallback chain was added. Escape-free
+first, POSIX second, `split()` last.
+
+**A separate bug fell out of this.** shlex's `punctuation_chars` mode glues adjacent operators, so
+`...2>&1); npm test` arrives with `);` as a single token, which the separator set missed - merging
+two commands into one segment and hiding the second program behind the first. While any argument
+counted as a match, this produced the right answer for the wrong reason. `_is_break` now recognises
+a token of nothing but operators.
+
+**Measured effect** on the frozen 135,618 commands: 3,303 classified as test runs before, 3,300
+after. Three corrections (`dotnet test --help` twice, one `pytest --co`), one command newly found
+(the `);`-hidden `npm test`), and two known misclassifications in opposite directions from heredoc
+and multi-line-quote blindness - re-filed as open entry 1 rather than papered over.
+
+#### 4. `.gitignore` negation carved a hole in the privacy control - FIXED
+
+`!tests/**/*.jsonl` narrowed to `!tests/fixtures/*.jsonl`, and `*.jsonl.gz`, `.env` and `.env.*`
+added. Verified with `git check-ignore`: `tests/x.jsonl` and `tests/sub/deep/x.jsonl` are ignored,
+`tests/fixtures/x.jsonl` is committable. Dropping a real transcript anywhere but the fixtures
+directory now needs an explicit `git add -f`, which is a decision rather than an accident.
+
+#### 5. CI installed outside the lock - FIXED
+
+`uv pip install -e ".[dev]"` never read `uv.lock` - uv's pip interface is lock-unaware - so the lock
+claimed a reproducibility CI did not have and `ruff>=0.16.6` floated. Both jobs now run
+`uv sync --all-extras --frozen`, which fails rather than silently re-resolving when the lock and
+`pyproject.toml` disagree. `uv sync` creates the environment itself, so the explicit `uv venv` step
+is gone. Verified locally: the sync resolves, and the suite and ruff both run green from the
+resulting environment. (The run-1 note that `uv sync` would *uninstall* the dev tools no longer
+holds - Dependabot has since moved the lock.)
+
+#### 6. Two user-facing findings never exercised end to end - FIXED
+
+Both now driven through `evaluate`: twelve Bash calls with five errors for "High tool failure
+rate: 42% of 12 calls", and a session with a `hook_blocked` attachment for "Hooks blocked 1 tool
+call(s)". A clean session asserts neither string appears.
+
+#### Verification
+
+163 tests pass (50 new). Coverage **98.4%**, up from 97.5%, against a 95% floor; `metrics.py` alone
+went 97% → 99%. `ruff check` and `ruff format --check` clean. The corpus sweeps and the frozen
+command-set comparison were run locally, on Python 3.11 and 3.13.
+
+Not run locally: the GitHub Actions workflow itself, so the `uv sync --frozen` change is verified by
+running the same command by hand rather than by observing a CI run.
+
 ### 2026-09-08 - full pass (commit 08cb9d1)
 
 **Fixed.**
