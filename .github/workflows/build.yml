@@ -17,12 +17,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # setup-uv creates the .venv and exports VIRTUAL_ENV, so do not add `uv venv`.
+      # v5 created the .venv and exported VIRTUAL_ENV; v7 sets UV_PYTHON and
+      # creates nothing, so `uv pip install` fails with "No virtual environment
+      # found" until one exists. The venv is explicit here rather than implied
+      # by the action's version.
       - name: Install uv and Python ${{ matrix.python-version }}
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
+
+      - name: Create the virtual environment
+        run: uv venv
 
       - name: Install
         run: uv pip install -e ".[dev]"
@@ -51,10 +57,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           python-version: "3.11"
+
+      - name: Create the virtual environment
+        run: uv venv
 
       - name: Install
         run: uv pip install -e ".[dev]" pip-audit
