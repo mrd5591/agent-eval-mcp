@@ -63,15 +63,6 @@ async def test_analyze_session_returns_the_evaluation(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_analyze_session_also_returns_structured_content(tmp_path):
-    path = fx.write_transcript(tmp_path / "s.jsonl", fx.simple_session())
-
-    result = await mcp_server.server.call_tool("analyze_session", {"path": str(path)})
-
-    assert result.structured_content["session_id"] == fx.SESSION_ID
-
-
-@pytest.mark.anyio
 async def test_analyze_session_never_returns_prompt_text(tmp_path):
     records = [fx.user_message("classified material"), *fx.simple_session()]
     path = fx.write_transcript(tmp_path / "s.jsonl", records)

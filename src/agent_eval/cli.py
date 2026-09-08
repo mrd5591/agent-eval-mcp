@@ -7,11 +7,16 @@ import json
 import sys
 from pathlib import Path
 
-from .metrics import evaluate
+from .metrics import MIN_LOOP_THRESHOLD, evaluate, summarize_path
 from .report import render_json, render_text
-from .transcript import iter_session_files, parse_session
+from .transcript import DEFAULT_ROOT, iter_session_files, load_session, resolve_root
 
-DEFAULT_ROOT = Path.home() / ".claude" / "projects"
+
+def _loop_threshold(value: str) -> int:
+    threshold = int(value)
+    if threshold < MIN_LOOP_THRESHOLD:
+        raise argparse.ArgumentTypeError(f"must be at least {MIN_LOOP_THRESHOLD}")
+    return threshold
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -26,9 +31,9 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--json", action="store_true", help="emit JSON instead of text")
     analyze.add_argument(
         "--loop-threshold",
-        type=int,
+        type=_loop_threshold,
         default=3,
-        help="how many repeats of one action count as a loop (default: 3)",
+        help="how many repeats of one action count as a loop (default: 3, minimum: 2)",
     )
     analyze.add_argument(
         "--strict",
@@ -43,35 +48,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"directory to search (default: {DEFAULT_ROOT})",
     )
     sessions.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    sessions.add_argument(
+        "--include-subagents",
+        action="store_true",
+        help="also list the transcripts of subagents a session spawned",
+    )
 
     return parser
 
 
 def _analyze(args: argparse.Namespace) -> int:
-    path = Path(args.path)
-    if not path.is_file():
-        print(f"error: transcript not found: {path}", file=sys.stderr)
+    try:
+        session = load_session(args.path)
+    except FileNotFoundError as error:
+        print(f"error: {error}", file=sys.stderr)
         return 2
 
-    evaluation = evaluate(parse_session(path), loop_threshold=args.loop_threshold)
+    evaluation = evaluate(session, loop_threshold=args.loop_threshold)
     print(render_json(evaluation) if args.json else render_text(evaluation))
     return 1 if (args.strict and evaluation.findings) else 0
 
 
 def _sessions(args: argparse.Namespace) -> int:
-    rows = []
-    for path in iter_session_files(Path(args.root)):
-        session = parse_session(path)
-        rows.append(
-            {
-                "path": str(path),
-                "session_id": session.session_id,
-                "cwd": session.cwd,
-                "tool_calls": len(session.tool_calls),
-                "human_turns": session.human_turns,
-                "total_usd": session.cost.total_usd,
-            }
-        )
+    try:
+        root = resolve_root(args.root)
+    except NotADirectoryError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    rows = [
+        summarize_path(path)
+        for path in iter_session_files(root, include_subagents=args.include_subagents)
+    ]
 
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
@@ -91,10 +99,19 @@ def _sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tolerate_narrow_encodings() -> None:
+    """Transcripts carry arbitrary Unicode; a cp1252 console must not turn that into a crash."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI. Returns the process exit code."""
+    _tolerate_narrow_encodings()
     parser = _build_parser()
-    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    args = parser.parse_args(argv)
 
     if args.command == "analyze":
         return _analyze(args)

@@ -3,25 +3,72 @@
 from __future__ import annotations
 
 import re
+import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-from .transcript import Session, ToolCall
+from .transcript import Session, ToolCall, parse_session, read_cost
 
 # Repetition of a read-only tool is navigation, not thrash.
 _STATEFUL_TOOLS = frozenset({"Bash", "PowerShell", "Edit", "Write", "NotebookEdit"})
 
-# Anchored so "ls tests/" does not match but "cd x && pytest" does.
-_TEST_RUNNER = re.compile(
-    r"(?:^|[;&|]\s*)(?:"
-    r"pytest|py\.test|tox|nox"
-    r"|npm\s+(?:run\s+)?test|yarn\s+test|pnpm\s+test|jest|vitest"
-    r"|mvn\s+(?:.*\s)?(?:test|verify)|gradle(?:w)?\s+(?:.*\s)?test"
-    r"|go\s+test|cargo\s+test|dotnet\s+test|rspec|phpunit|ctest"
-    r")\b",
-    re.IGNORECASE,
-)
+MIN_LOOP_THRESHOLD = 2
 
 _UNPROMPTED_MODES = frozenset({"bypassPermissions", "auto", "acceptEdits", "dontAsk"})
+
+# Test-run detection works on the parsed command, not the raw string: each shell segment is
+# tokenised, wrapper prefixes are peeled off, and the first real word is looked up here. A runner
+# that needs a subcommand lists the subcommands that run tests.
+_RUNNERS: dict[str, frozenset[str] | None] = {
+    "pytest": None,
+    "py.test": None,
+    "tox": None,
+    "nox": None,
+    "jest": None,
+    "vitest": None,
+    "mocha": None,
+    "rspec": None,
+    "phpunit": None,
+    "ctest": None,
+    "npm": frozenset({"test", "t", "tst"}),
+    "yarn": frozenset({"test"}),
+    "pnpm": frozenset({"test"}),
+    "bun": frozenset({"test"}),
+    "deno": frozenset({"test"}),
+    "mvn": frozenset({"test", "verify", "install", "package"}),
+    "gradle": frozenset({"test", "check", "build"}),
+    "gradlew": frozenset({"test", "check", "build"}),
+    "go": frozenset({"test"}),
+    "cargo": frozenset({"test", "nextest"}),
+    "dotnet": frozenset({"test"}),
+    "make": frozenset({"test", "check"}),
+    "mix": frozenset({"test"}),
+    "rake": frozenset({"test", "spec"}),
+    "swift": frozenset({"test"}),
+}
+
+_SEGMENT_BREAKS = frozenset({";", "&&", "||", "|", "&"})
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_ONE_WORD_WRAPPERS = frozenset({"sudo", "time", "nice", "env", "exec", "command", "npx", "bunx"})
+_TWO_WORD_WRAPPERS = frozenset(
+    {
+        ("uv", "run"),
+        ("uvx", ""),
+        ("poetry", "run"),
+        ("pipenv", "run"),
+        ("pdm", "run"),
+        ("hatch", "run"),
+        ("pnpm", "exec"),
+        ("pnpm", "dlx"),
+        ("yarn", "run"),
+        ("npm", "exec"),
+        ("python", "-m"),
+        ("python3", "-m"),
+        ("py", "-m"),
+    }
+)
 
 
 @dataclass
@@ -123,7 +170,13 @@ def tool_usage(session: Session) -> ToolUsage:
 
 
 def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
-    """Find stateful actions repeated at least `threshold` times, matched on signature."""
+    """Find stateful actions repeated at least `threshold` times, matched on signature.
+
+    Raises:
+        ValueError: when the threshold is below 2, since one occurrence is not a repeat.
+    """
+    if threshold < MIN_LOOP_THRESHOLD:
+        raise ValueError(f"threshold must be at least {MIN_LOOP_THRESHOLD}, got {threshold}")
     grouped: dict[str, list[ToolCall]] = {}
     for call in session.tool_calls:
         if call.name not in _STATEFUL_TOOLS:
@@ -135,7 +188,7 @@ def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
             tool=calls[0].name,
             signature=signature,
             occurrences=len(calls),
-            all_failed=all(call.failed for call in calls),
+            all_failed=all(call.resolved and call.failed for call in calls),
         )
         for signature, calls in grouped.items()
         if len(calls) >= threshold
@@ -143,25 +196,89 @@ def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
     return sorted(loops, key=lambda loop: (-loop.occurrences, loop.signature))
 
 
+def _segments(command: str) -> Iterable[list[str]]:
+    """Split a shell command into its simple commands, one token list each."""
+    for line in command.splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            tokens = line.split()
+        segment: list[str] = []
+        for token in tokens:
+            if token in _SEGMENT_BREAKS:
+                if segment:
+                    yield segment
+                segment = []
+            else:
+                segment.append(token)
+        if segment:
+            yield segment
+
+
+def _strip_wrappers(tokens: list[str]) -> list[str]:
+    """Peel off env assignments and launcher prefixes until the real program is first."""
+    while tokens:
+        head = tokens[0]
+        if _ENV_ASSIGNMENT.match(head):
+            tokens = tokens[1:]
+        elif head == "timeout" and len(tokens) > 2:
+            tokens = tokens[2:]
+        elif head in _ONE_WORD_WRAPPERS:
+            tokens = tokens[1:]
+        elif len(tokens) > 1 and (head, tokens[1]) in _TWO_WORD_WRAPPERS:
+            tokens = tokens[2:]
+        else:
+            break
+    return tokens
+
+
+def _program(token: str) -> str:
+    name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat", ".sh"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name
+
+
+def is_test_run(command: str) -> bool:
+    """Whether a shell command runs a test suite."""
+    for segment in _segments(command):
+        tokens = _strip_wrappers(segment)
+        if not tokens:
+            continue
+        subcommands = _RUNNERS.get(_program(tokens[0]), False)
+        if subcommands is None:
+            return True
+        if subcommands and any(arg in subcommands for arg in tokens[1:]):
+            return True
+    return False
+
+
 def suite_events(session: Session) -> SuiteEvents:
-    """Count test runs, how many failed, and whether the session ended green."""
+    """Count test runs, how many failed, and whether the session ended green.
+
+    A run whose result never arrived (the session was cut off) counts as a run but decides
+    nothing: if it was the last one, the ending is unknown rather than green.
+    """
     events = SuiteEvents()
-    last_failed: bool | None = None
+    last: ToolCall | None = None
     for call in session.tool_calls:
-        if not call.command or not _TEST_RUNNER.search(call.command):
+        if not call.command or not is_test_run(call.command):
             continue
         events.runs += 1
         if call.failed:
             events.failures += 1
-        last_failed = call.failed
-    if last_failed is not None:
-        events.ended_green = not last_failed
+        last = call
+    if last is not None and last.resolved:
+        events.ended_green = not last.failed
     return events
 
 
 def gate_events(session: Session) -> GateEvents:
     """Report the permission posture and how often a hook refused something."""
-    modes = list(session.permission_modes)
+    modes = list(dict.fromkeys(session.permission_modes))
     return GateEvents(
         permission_modes=modes,
         ran_without_prompts=any(mode in _UNPROMPTED_MODES for mode in modes),
@@ -178,6 +295,40 @@ def cost_summary(session: Session) -> CostSummary:
         duration_ms=cost.duration_ms,
         models=list(cost.models),
     )
+
+
+def summarize(session: Session) -> dict[str, Any]:
+    """The one-line view of a session used by every listing."""
+    return {
+        "path": str(session.path),
+        "session_id": session.session_id,
+        "cwd": session.cwd,
+        "tool_calls": len(session.tool_calls),
+        "human_turns": session.human_turns,
+        "total_usd": session.cost.total_usd,
+    }
+
+
+def summarize_path(path: Path) -> dict[str, Any]:
+    """Parse and summarize one transcript."""
+    return summarize(parse_session(path))
+
+
+def aggregate_cost(paths: Iterable[Path]) -> dict[str, Any]:
+    """Spend across many sessions, reading only each file's cost rollup."""
+    total = CostSummary()
+    count = 0
+    for path in paths:
+        cost = read_cost(path)
+        count += 1
+        total.total_usd += cost.total_usd
+        total.lines_changed += cost.lines_added + cost.lines_removed
+    return {
+        "sessions": count,
+        "total_usd": total.total_usd,
+        "lines_changed": total.lines_changed,
+        "usd_per_100_lines": total.usd_per_100_lines,
+    }
 
 
 def _findings(

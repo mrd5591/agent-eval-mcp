@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterator
@@ -9,7 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+DEFAULT_ROOT = Path.home() / ".claude" / "projects"
+
 RESULT_SNIPPET_CHARS = 400
+
+# Files under a session's subagents/ directory are that session's delegated work, not sessions of
+# their own; journal.jsonl is a workflow log with no session records in it.
+SUBAGENT_DIR = "subagents"
+NON_SESSION_FILES = frozenset({"journal.jsonl"})
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -40,9 +48,18 @@ class ToolCall:
 
     @property
     def signature(self) -> str:
-        """Identity for "the agent did this again". Keys on the whole input, not just the path."""
-        salient = self.command or json.dumps(self.tool_input, sort_keys=True)
-        return f"{self.name}:{_WHITESPACE.sub(' ', salient).strip()}"
+        """Identity for "the agent did this again".
+
+        A shell command is its own identity. Every other input is reduced to the target path plus a
+        fingerprint of the whole input, so two identical edits match while the edited text itself
+        (which may be a whole file) never leaves the parser.
+        """
+        if self.command:
+            return f"{self.name}:{_WHITESPACE.sub(' ', self.command).strip()}"
+        digest = hashlib.sha256(
+            json.dumps(self.tool_input, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:12]
+        return f"{self.name}:{self.target}#{digest}"
 
 
 @dataclass
@@ -78,12 +95,44 @@ class Session:
         )
 
 
-def iter_session_files(root: Path) -> Iterator[Path]:
-    """Yield every transcript under a root directory. Missing roots yield nothing."""
+def resolve_root(root: str | Path | None) -> Path:
+    """Expand and check a transcript root.
+
+    Raises:
+        NotADirectoryError: when the root does not exist or is not a directory.
+    """
+    resolved = Path(root).expanduser() if root else DEFAULT_ROOT
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"Not a directory: {resolved}")
+    return resolved
+
+
+def iter_session_files(root: Path, include_subagents: bool = False) -> Iterator[Path]:
+    """Yield session transcripts under a root, newest first. Missing roots yield nothing."""
     root = Path(root)
     if not root.is_dir():
         return
-    yield from sorted(root.rglob("*.jsonl"))
+    candidates = []
+    for path in root.rglob("*.jsonl"):
+        if path.name in NON_SESSION_FILES:
+            continue
+        if not include_subagents and SUBAGENT_DIR in path.relative_to(root).parts:
+            continue
+        candidates.append((path.stat().st_mtime_ns, path))
+    for _, path in sorted(candidates, key=lambda item: (-item[0], str(item[1]))):
+        yield path
+
+
+def load_session(path: str | Path) -> Session:
+    """Parse one transcript by path.
+
+    Raises:
+        FileNotFoundError: when the path is not a file.
+    """
+    resolved = Path(path).expanduser()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Transcript not found: {resolved}")
+    return parse_session(resolved)
 
 
 def _iter_records(path: Path) -> Iterator[dict]:
@@ -111,6 +160,61 @@ def _content_blocks(record: dict) -> list[dict]:
     return [block for block in content if isinstance(block, dict)]
 
 
+def _is_human_turn(record: dict) -> bool:
+    """A user record that a person typed, as opposed to one the runtime injected.
+
+    The runtime writes many user-role records with string content that no human wrote: meta
+    injections, compaction summaries, and tagged payloads such as command output or task
+    notifications. Those are recognisable by their flags or by opening with a tag.
+    """
+    if record.get("isMeta") or record.get("isCompactSummary"):
+        return False
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, str) and not content.lstrip().startswith("<")
+
+
+def _as_float(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cost_from(record: dict) -> Cost:
+    usage = record.get("modelUsage")
+    return Cost(
+        total_usd=_as_float(record.get("totalCostUSD") or 0.0),
+        lines_added=_as_int(record.get("totalLinesAdded") or 0),
+        lines_removed=_as_int(record.get("totalLinesRemoved") or 0),
+        duration_ms=_as_int(record.get("totalDuration") or 0),
+        models=sorted(usage) if isinstance(usage, dict) else [],
+    )
+
+
+def read_cost(path: Path) -> Cost:
+    """The cost rollup alone, without parsing every tool call. Same answer as a full parse."""
+    cost = Cost()
+    with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if '"cost-state"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and record.get("type") == "cost-state":
+                cost = _cost_from(record)
+    return cost
+
+
 def parse_session(path: Path) -> Session:
     """Read one transcript into a Session."""
     path = Path(path)
@@ -133,14 +237,7 @@ def parse_session(path: Path) -> Session:
             continue
 
         if record_type == "cost-state":
-            usage = record.get("modelUsage")
-            session.cost = Cost(
-                total_usd=float(record.get("totalCostUSD") or 0.0),
-                lines_added=int(record.get("totalLinesAdded") or 0),
-                lines_removed=int(record.get("totalLinesRemoved") or 0),
-                duration_ms=int(record.get("totalDuration") or 0),
-                models=sorted(usage) if isinstance(usage, dict) else [],
-            )
+            session.cost = _cost_from(record)
             continue
 
         if record_type == "attachment":
@@ -152,7 +249,7 @@ def parse_session(path: Path) -> Session:
         blocks = _content_blocks(record)
 
         if record_type == "user":
-            if isinstance((record.get("message") or {}).get("content"), str):
+            if _is_human_turn(record):
                 session.human_turns += 1
             for block in blocks:
                 if block.get("type") != "tool_result":

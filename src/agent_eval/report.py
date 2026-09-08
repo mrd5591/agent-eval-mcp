@@ -62,7 +62,7 @@ def render_text(evaluation: Evaluation) -> str:
     if gates.permission_modes or gates.hook_blocks:
         lines.append("Gates")
         if gates.permission_modes:
-            lines.append(f"  permission mode: {', '.join(sorted(set(gates.permission_modes)))}")
+            lines.append(f"  permission mode: {', '.join(gates.permission_modes)}")
         if gates.hook_blocks:
             lines.append(f"  hook blocks: {gates.hook_blocks}")
         lines.append("")
