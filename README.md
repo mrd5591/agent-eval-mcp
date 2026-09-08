@@ -193,7 +193,7 @@ clean on every metric here and still produce the wrong feature.
 ```bash
 uv venv --python 3.11
 uv pip install -e ".[dev]"
-pytest                 #  tests, coverage gate at 90%
+pytest                 # 105 tests, coverage gate at 90%
 ruff check . && ruff format --check .   # lint and format gates
 ```
 
