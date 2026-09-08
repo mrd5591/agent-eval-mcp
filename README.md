@@ -85,6 +85,10 @@ Four tools: `list_sessions`, `analyze_session`, `find_loops`, `cost_report`. Sch
 descriptions are derived from the function signatures and docstrings, so what a model reads and what
 it gets cannot drift apart.
 
+Results come back as MCP structured content. A tool returning an object gives you that object; a
+tool returning a list is wrapped as `{"result": [...]}`. A missing transcript raises `ToolError`
+naming the path, so a model that guessed wrong can correct itself from the error alone.
+
 ## Privacy is a design constraint, not a setting
 
 Transcripts contain prompts, file contents, paths and occasionally credentials that were pasted into
