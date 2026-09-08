@@ -1,0 +1,28 @@
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published detector finds old code rather than waiting
+    # for someone to touch the file again.
+    - cron: '0 6 * * 1'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+
+      # No build step: Python needs none for extraction, and the package is
+      # pure source. Installing dependencies would only add analysis surface
+      # this repo does not own.
+      - uses: github/codeql-action/analyze@v3
