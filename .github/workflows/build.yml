@@ -15,7 +15,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # setup-uv creates the .venv and exports VIRTUAL_ENV, so do not add `uv venv`.
       - name: Install uv and Python ${{ matrix.python-version }}
@@ -38,3 +38,26 @@ jobs:
       # The coverage floor lives in pyproject.toml, so CI and local agree.
       - name: Test
         run: uv run pytest
+
+  # This repo reads session transcripts, which are the most sensitive files on a
+  # developer's machine. It had no dependency audit at all while its two sibling
+  # repos each had one, which is the wrong repo to leave unwatched.
+  #
+  # The tree is small, so this runs on every push rather than weekly. --strict
+  # fails when a dependency cannot be audited, because an audit that silently
+  # skips what it cannot resolve is a gate that cannot fail.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install
+        run: uv pip install -e ".[dev]" pip-audit
+
+      - name: Audit dependencies
+        run: uv run pip-audit --strict
