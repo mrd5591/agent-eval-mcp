@@ -11,9 +11,22 @@ build/
 .vscode/
 .DS_Store
 
-# Never commit real transcripts.
+# Never commit real transcripts. A session transcript is the most sensitive thing
+# this tool touches: it holds file contents, commands and paths verbatim.
+#
+# The negation is narrow on purpose. `!tests/**/*.jsonl` re-enabled commits
+# anywhere under tests/ - precisely where a contributor debugging against real
+# data would drop one. Only tests/fixtures/ is exempt now, and every fixture
+# there should be synthetic; committing a transcript anywhere else needs an
+# explicit `git add -f`, which is a decision rather than an accident.
 *.jsonl
-!tests/**/*.jsonl
+*.jsonl.gz
+!tests/fixtures/*.jsonl
+
+# Environment files, which pick up tokens.
+.env
+.env.*
+!.env.example
 
 # Isolated worktrees for autonomous runs.
 .worktrees/

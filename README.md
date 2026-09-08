@@ -116,9 +116,12 @@ So:
   400 characters. A command can carry content inline - a heredoc body, an `echo secret >` redirect -
   so an uncapped echo would put a whole file in a finding. The cap bounds that. It does not make a
   short secret written inline invisible, which is why the advice below is to grep the JSON.
-- **Tool results are truncated to 400 characters.** Nothing reads them today. They are retained for
-  the exit-state and test-summary parsing that `suite_events` still owes: it currently decides green
-  or red from the transport error flag alone, so a suite that fails while exiting 0 reads as green.
+- **Tool results are truncated to 400 characters,** and those characters are read: `suite_events`
+  scans a test run's own output for failure markers, because the transport's error flag cannot be
+  trusted on its own. A shell pipeline exits with the status of its *last* command, so
+  `pytest ... 2>&1 | head -30` exits 0 however the tests went - and that shape is 85% of the
+  test-run commands in the corpus below. The retention now pays for itself; it used to be held
+  against a parsing feature that did not exist.
 - **Nothing is written to a transcript directory.** The parser opens files read-only, and there is
   no code path in the package that writes there.
 - **No real transcript is committed.** Every test fixture is hand-written synthetic JSONL, and the
@@ -129,19 +132,43 @@ sensitive; the tests do exactly that.
 
 ## Run against a real corpus
 
-The analyser was run over a personal archive of **3,617 transcript files** (629 top-level sessions
-plus the subagent transcripts they spawned) containing **211,062 tool calls**, in 34 seconds on a
+The analyser was run over a personal archive of **3,542 transcript files** (611 top-level sessions
+plus the subagent transcripts they spawned) containing **208,035 tool calls**, in 27 seconds on a
 laptop:
 
 | | Top-level sessions | Including subagents |
 |---|---|---|
-| Transcripts parsed | 629 (555 with at least one tool call) | 3,617 (3,538) |
-| Tool calls | 86,590, of which 3.2% returned an error | 211,062, 2.7% |
-| Sessions with a detected loop | 116, or 18.4% | 280, or 7.7% |
-| Sessions ending green / red on a recognized test run | 137 / 0 | 627 / 7 |
-| Findings raised | 232 loops | 511 loops, 7 red endings, 5 high-failure-rate sessions |
+| Transcripts parsed | 611 (537 with at least one tool call) | 3,542 (3,463) |
+| Tool calls | 85,883, of which 3.2% returned an error | 208,035, 2.7% |
+| Sessions with a detected loop | 108, or 17.7% | 266, or 7.5% |
+| Sessions ending green / red on a recognized test run | 137 / 6 | 646 / 17 |
+| Findings raised | 221 loops, 6 red endings | 486 loops, 17 red endings, 5 high-failure-rate sessions |
 
 Two of this tool's own defects were found by running it, not by reading it.
+
+**These figures were re-measured on 2026-09-08** and replace an earlier set. Two things moved them,
+and it is worth separating them, because only one is a change to the tool.
+
+The corpus itself shrank: transcripts are rotated away over time, so the archive is a living thing
+and 629 top-level sessions became 611. Nothing can be concluded from a comparison across that.
+
+The red column is the real change. It was **0 / 7** and is now **6 / 17**, because `suite_events`
+stopped taking the exit status at face value. To attribute that honestly rather than confound it
+with the corpus drift, the classifier change was measured against a *frozen* set of the 135,618
+distinct shell commands in the archive, run through both the old and the new implementation:
+
+- 3,303 commands classified as test runs before, 3,300 after - a 0.09% change, so the "recognized
+  test run" denominator is essentially the same population.
+- The corrections were `dotnet test --help` (twice) and a `pytest --co` collect-only, all three
+  genuinely not test runs; and one command the old code missed entirely, an `npm test` hidden
+  behind a glued `);` token.
+- Two commands are classified wrongly by both implementations, in opposite directions, for the same
+  reason: the parser has no notion of a heredoc body or a quoted string spanning lines, so prose in
+  a commit message can look like a command and an embedded script can hide one. Two in 135,618, and
+  recorded rather than papered over.
+
+So the green/red shift is not a re-baselining artefact. It is the same commands, judged correctly:
+those sessions really did end on a failing suite, and the tool used to say they were green.
 
 That run is also how the loop detector's own bug was found. On the first pass, a seven-hour session
 reported five separate edits to one file as a loop, because the signature for an editing tool keyed

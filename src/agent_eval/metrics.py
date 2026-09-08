@@ -50,25 +50,135 @@ _RUNNERS: dict[str, frozenset[str] | None] = {
 }
 
 _SEGMENT_BREAKS = frozenset({";", "&&", "||", "|", "&"})
+
+# shlex's punctuation_chars mode glues adjacent shell operators into a single
+# token, so `...log 2>&1); npm test` arrives with `);` as one token. A plain
+# membership test against _SEGMENT_BREAKS misses it, the two commands merge into
+# one segment, and the second command's program is hidden behind the first's -
+# `npm test` after an `npm ci` was read as part of the `ci`.
+#
+# This was invisible while any argument anywhere counted as a subcommand match:
+# the merged segment still contained the word "test", so the right answer came
+# out for the wrong reason. Matching the subcommand slot properly is what
+# exposed it.
+_PUNCTUATION_ONLY = re.compile(r"^[();&|<>]+$")
+_BREAK_CHARS = frozenset({";", "&", "|"})
+
+# Failure markers looked for in a test run's own output.
+#
+# The transport's `is_error` flag is not enough on its own, and the corpus says
+# why: 85% of the test-run commands in it pipe through `2>&1 | head -30` or
+# similar. A shell pipeline exits with the status of its *last* command, so
+# `pytest ... | head` exits 0 however the tests went, and the run is recorded as
+# green. `pytest || true` and a wrapper that swallows the code do the same thing
+# for the same reason. A tool whose central claim is that it measures what the
+# agent actually did cannot take the exit status at face value.
+#
+# Deliberately narrow, and only ever used to turn a green *red*, never the other
+# way round - see suite_events. A marker that fires wrongly costs a false alarm
+# on one session; a missing marker costs nothing that was not already missing.
+_FAILURE_MARKERS = (
+    re.compile(r"\bFAILED\b"),  # pytest, jest
+    re.compile(r"^\s*(?:---\s*)?FAIL\b", re.MULTILINE),  # go test, jest suite lines
+    re.compile(r"\bAssertionError\b"),
+    re.compile(r"\bBUILD FAILURE\b"),  # maven
+    re.compile(r"Tests run:.*?(?:Failures|Errors): [1-9]"),  # maven summary
+    re.compile(r"^\s*panic:", re.MULTILINE),  # go
+    re.compile(r"=+ FAILURES =+"),  # pytest section header
+    re.compile(r"\b[1-9]\d* (?:failed|failing)\b"),  # vitest, jest, mocha
+)
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_ONE_WORD_WRAPPERS = frozenset({"sudo", "time", "nice", "env", "exec", "command", "npx", "bunx"})
+# `uvx` belongs here, not in the two-word set: it takes the tool as its very next
+# word, so `uvx pytest` peels to `pytest`. As a ("uvx", "") pair it required an
+# empty second token, which no tokeniser produces, so it never matched anything.
+_ONE_WORD_WRAPPERS = frozenset(
+    {"sudo", "time", "nice", "env", "exec", "command", "npx", "bunx", "uvx"}
+)
 _TWO_WORD_WRAPPERS = frozenset(
     {
         ("uv", "run"),
-        ("uvx", ""),
         ("poetry", "run"),
         ("pipenv", "run"),
         ("pdm", "run"),
         ("hatch", "run"),
         ("pnpm", "exec"),
         ("pnpm", "dlx"),
-        ("yarn", "run"),
         ("npm", "exec"),
         ("python", "-m"),
         ("python3", "-m"),
         ("py", "-m"),
     }
 )
+
+# Package managers whose test script hides behind `run`: `npm run test`,
+# `yarn run test`. The subcommand slot holds "run", so the slot after it is the
+# one to read.
+#
+# `("yarn", "run")` used to sit in _TWO_WORD_WRAPPERS, which peeled it to
+# ["test"] - and "test" is not a runner, so `yarn run test` classified as *not*
+# a test run. npm and pnpm only worked by accident: they had no "run" entry, so
+# they fell through to the old scan-every-argument match.
+_RUN_INDIRECTION = frozenset({"npm", "yarn", "pnpm", "bun", "deno"})
+
+# Tools that take a list of goals or targets rather than one subcommand. Every
+# positional is a thing that runs, so any of them may be the test one:
+# `mvn clean install` genuinely runs the install phase, and `make lint test`
+# genuinely runs tests.
+_MULTI_TARGET = frozenset({"mvn", "gradle", "gradlew", "make", "rake"})
+
+# Flags that mean "do not actually run the tests". A command carrying one of
+# these is a build or a query, and counting it as a test run is how a suite
+# nobody ran becomes evidence that the suite passed.
+#
+# Deliberately conservative. `-v` and `-n` are *not* here despite looking like
+# query flags: `pytest -v` is a verbose run and `pytest -n 4` is a parallel one,
+# and suppressing either would trade a false positive for a false negative on
+# two of the most common invocations there are. Matched case-insensitively so
+# `-DskipTests` and `-Dskiptests` behave the same.
+_SKIP_FLAGS = frozenset(
+    {
+        "-dskiptests",
+        "-dskiptests=true",
+        "-dmaven.test.skip",
+        "-dmaven.test.skip=true",
+        "--collect-only",
+        "--co",
+        "--version",
+        "--help",
+        "-h",
+        "--dry-run",
+        "--list-tests",
+    }
+)
+
+# Gradle spells exclusion as a separate argument: `gradle build -x test`.
+_SKIP_PAIRS = frozenset({("-x", "test"), ("--exclude-task", "test")})
+
+# Flags that consume the word after them, which is therefore an option value and
+# not a subcommand or target. Without this, `make -C test all` reads "test" as a
+# target and counts as a test run - the directory merely happens to be named
+# after the thing it is not doing.
+#
+# Per program, and case-sensitive, because a global set collides: `make -s` is
+# silent and takes no value, while `mvn -s` names a settings file; `-C` is a
+# directory for make and Go, while `-c` is a configuration for dotnet. Attached
+# forms (`-C=test`, `--prefix=test`) need no entry - they are one token starting
+# with "-", so they are skipped as flags anyway.
+_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "make": frozenset(
+        {"-C", "--directory", "-f", "--file", "--makefile", "-j", "--jobs", "-o", "-W"}
+    ),
+    "go": frozenset({"-C"}),
+    "mvn": frozenset({"-f", "--file", "-s", "--settings", "-P", "--activate-profiles", "-T"}),
+    "gradle": frozenset({"-p", "--project-dir", "-b", "--build-file", "-I", "--init-script"}),
+    "gradlew": frozenset({"-p", "--project-dir", "-b", "--build-file", "-I", "--init-script"}),
+    "cargo": frozenset({"--manifest-path", "-p", "--package", "--features", "-j", "--jobs"}),
+    "npm": frozenset({"--prefix", "-w", "--workspace"}),
+    "yarn": frozenset({"--cwd"}),
+    "pnpm": frozenset({"-C", "--dir", "-w", "--workspace"}),
+    "dotnet": frozenset({"-c", "--configuration", "-f", "--framework", "-o", "--output"}),
+    "rake": frozenset({"-f", "--rakefile", "-C", "--directory"}),
+}
 
 
 @dataclass
@@ -196,18 +306,61 @@ def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
     return sorted(loops, key=lambda loop: (-loop.occurrences, loop.signature))
 
 
+def _is_break(token: str) -> bool:
+    """Whether a token separates two commands.
+
+    A token of nothing but shell operators counts if any of them is a separator,
+    which covers the glued forms shlex produces (`);`, `|&`) as well as the plain
+    ones. A redirection such as `>&` also breaks; that is harmless, because what
+    identifies a command is the program at the head of its segment and no
+    redirection ever precedes one.
+    """
+    if token in _SEGMENT_BREAKS:
+        return True
+    return bool(_PUNCTUATION_ONLY.match(token)) and any(c in _BREAK_CHARS for c in token)
+
+
+def _lex(line: str, *, escape: bool) -> list[str] | None:
+    """Tokenise one line, or None if it does not parse."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    if not escape:
+        lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _tokenise(line: str) -> list[str]:
+    """Tokenise a shell line, preferring the reading that keeps Windows paths intact.
+
+    POSIX shlex treats backslash as an escape, so `C:\\repo\\.venv\\Scripts\\pytest.exe`
+    came out as `C:repo.venvScriptspytest.exe` and never classified - the backslash
+    normalising in `_program` could not fire, because there were no backslashes left
+    by the time it ran.
+
+    Disabling the escape fixes that, but it cannot simply be disabled: a command
+    containing `\\"` then reads as an unbalanced quote, and the naive `split()`
+    fallback loses `;` and `&&` as separators, which merges every segment into one
+    and hides the runner. Three real test runs in a 135k-command corpus regressed
+    that way. So the escape-free reading is *preferred* and the POSIX one is the
+    fallback, which is a strict improvement over either alone.
+    """
+    for escape in (False, True):
+        tokens = _lex(line, escape=escape)
+        if tokens is not None:
+            return tokens
+    return line.split()
+
+
 def _segments(command: str) -> Iterable[list[str]]:
     """Split a shell command into its simple commands, one token list each."""
     for line in command.splitlines():
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        try:
-            tokens = list(lexer)
-        except ValueError:
-            tokens = line.split()
+        tokens = _tokenise(line)
         segment: list[str] = []
         for token in tokens:
-            if token in _SEGMENT_BREAKS:
+            if _is_break(token):
                 if segment:
                     yield segment
                 segment = []
@@ -242,18 +395,101 @@ def _program(token: str) -> str:
     return name
 
 
+def _has_skip_flag(tokens: list[str]) -> bool:
+    """Whether an argument list says the tests are not to be run."""
+    lowered = [token.lower() for token in tokens]
+    if any(token in _SKIP_FLAGS for token in lowered):
+        return True
+    return any(pair in _SKIP_PAIRS for pair in zip(lowered, lowered[1:], strict=False))
+
+
+def _positionals(program: str, args: list[str]) -> list[str]:
+    """The non-flag arguments, lowercased, with option values removed."""
+    value_flags = _VALUE_FLAGS.get(program, frozenset())
+    out: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith("-"):
+            # A flag that takes a separate value swallows the next word, which is
+            # then an option value rather than a subcommand or target.
+            skip_next = arg in value_flags
+            continue
+        out.append(arg.lower())
+    return out
+
+
+def _names_a_test(program: str, subcommands: frozenset[str], args: list[str]) -> bool:
+    """Whether the arguments name one of a runner's test subcommands.
+
+    Two shapes, because two kinds of tool are in the table.
+
+    A **multi-target** tool takes a list of goals or targets, all of them positional
+    and all of them run: `mvn clean install` really does run the install phase, and
+    `make lint test` really does run tests. Any target may be the test one.
+
+    Everything else has a single subcommand *slot*, and only the word in that slot
+    counts. Scanning the whole argument list is what made `go run ./cmd/seed test`,
+    `cargo run -- test` and `npm run build -- --env test` register as test runs.
+    `run` is transparent for the JS package managers, where the script name after it
+    is what names the suite.
+    """
+    positionals = _positionals(program, args)
+    if not positionals:
+        return False
+
+    if program in _MULTI_TARGET:
+        return any(target in subcommands for target in positionals)
+
+    slot = positionals[0]
+    if slot == "run" and program in _RUN_INDIRECTION and len(positionals) > 1:
+        slot = positionals[1]
+    return slot in subcommands
+
+
 def is_test_run(command: str) -> bool:
-    """Whether a shell command runs a test suite."""
+    """Whether a shell command runs a test suite.
+
+    The subcommand is matched in its *slot*, not anywhere in the argument list. Scanning
+    every argument counted `go run ./cmd/seed test`, `cargo run -- test` and
+    `make -C test all` as test runs, and a skip flag was invisible, so
+    `mvn clean install -DskipTests` counted too. A suite nobody ran is the worst thing
+    for this tool to record as a suite that passed.
+    """
     for segment in _segments(command):
         tokens = _strip_wrappers(segment)
         if not tokens:
             continue
-        subcommands = _RUNNERS.get(_program(tokens[0]), False)
+        program = _program(tokens[0])
+        subcommands = _RUNNERS.get(program, False)
+        if subcommands is False:
+            continue
+        if _has_skip_flag(tokens[1:]):
+            continue
         if subcommands is None:
             return True
-        if subcommands and any(arg in subcommands for arg in tokens[1:]):
+        if _names_a_test(program, subcommands, tokens[1:]):
             return True
     return False
+
+
+def looks_failed(call: ToolCall) -> bool:
+    """Whether a test run failed, by its transport flag or by its own output.
+
+    The flag alone is not enough. A pipeline exits with the status of its last command,
+    so `pytest ... 2>&1 | head -30` reports success whatever the tests did - and that
+    shape is 85% of the test-run commands in the corpus this tool was measured against.
+    `pytest || true` and a wrapper that eats the code fail the same way.
+
+    The output is therefore read as a second opinion, but only ever to turn a green run
+    red. A run the transport already called failed stays failed, so this can add
+    detections and cannot hide one.
+    """
+    if call.failed:
+        return True
+    return any(marker.search(call.result_text) for marker in _FAILURE_MARKERS)
 
 
 def suite_events(session: Session) -> SuiteEvents:
@@ -268,11 +504,11 @@ def suite_events(session: Session) -> SuiteEvents:
         if not call.command or not is_test_run(call.command):
             continue
         events.runs += 1
-        if call.failed:
+        if looks_failed(call):
             events.failures += 1
         last = call
     if last is not None and last.resolved:
-        events.ended_green = not last.failed
+        events.ended_green = not looks_failed(last)
     return events
 
 
