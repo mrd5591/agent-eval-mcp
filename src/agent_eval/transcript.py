@@ -21,6 +21,15 @@ NON_SESSION_FILES = frozenset({"journal.jsonl"})
 
 _WHITESPACE = re.compile(r"\s+")
 
+# A command can carry inline content (a heredoc body, an `echo secret >` redirect). Echoing it
+# whole would put a whole file in a finding, so the echo is capped the way a result is.
+COMMAND_SNIPPET_CHARS = 400
+
+
+def _fingerprint(text: str) -> str:
+    """A short, stable digest. Identity without the content."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
 
 @dataclass
 class ToolCall:
@@ -33,6 +42,13 @@ class ToolCall:
     result_text: str = ""
     resolved: bool = False
     failed: bool = False
+
+    def __repr__(self) -> str:
+        """Never the retained input or result: a bare repr is not a disclosure channel."""
+        return (
+            f"ToolCall(tool_id={self.tool_id!r}, name={self.name!r}, "
+            f"resolved={self.resolved}, failed={self.failed})"
+        )
 
     @property
     def command(self) -> str:
@@ -50,15 +66,19 @@ class ToolCall:
     def signature(self) -> str:
         """Identity for "the agent did this again".
 
-        A shell command is its own identity. Every other input is reduced to the target path plus a
-        fingerprint of the whole input, so two identical edits match while the edited text itself
-        (which may be a whole file) never leaves the parser.
+        A shell command is its own identity, but capped at COMMAND_SNIPPET_CHARS: a command can
+        carry inline content, and an uncapped echo would put all of it in a finding. A truncated
+        command keeps a fingerprint, so two long commands sharing a prefix stay distinct. Every
+        other input is reduced to the target path plus a fingerprint of the whole input, so two
+        identical edits match while the edited text itself (which may be a whole file) never
+        leaves the parser.
         """
         if self.command:
-            return f"{self.name}:{_WHITESPACE.sub(' ', self.command).strip()}"
-        digest = hashlib.sha256(
-            json.dumps(self.tool_input, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()[:12]
+            command = _WHITESPACE.sub(" ", self.command).strip()
+            if len(command) > COMMAND_SNIPPET_CHARS:
+                command = f"{command[:COMMAND_SNIPPET_CHARS]}...#{_fingerprint(command)}"
+            return f"{self.name}:{command}"
+        digest = _fingerprint(json.dumps(self.tool_input, sort_keys=True, default=str))
         return f"{self.name}:{self.target}#{digest}"
 
 
@@ -88,7 +108,7 @@ class Session:
     hook_blocks: int = 0
     cost: Cost = field(default_factory=Cost)
 
-    def __repr__(self) -> str:  # pragma: no cover - trivial, but load-bearing
+    def __repr__(self) -> str:
         return (
             f"Session(session_id={self.session_id!r}, cwd={self.cwd!r}, "
             f"tool_calls={len(self.tool_calls)}, human_turns={self.human_turns})"
@@ -98,10 +118,19 @@ class Session:
 def resolve_root(root: str | Path | None) -> Path:
     """Expand and check a transcript root.
 
+    Only ``None`` asks for the default. An empty string is a caller error: falling back to the
+    default would scan the real transcript archive when the caller asked for a specific directory.
+
     Raises:
-        NotADirectoryError: when the root does not exist or is not a directory.
+        NotADirectoryError: when the root is empty, does not exist, or is not a directory.
     """
-    resolved = Path(root).expanduser() if root else DEFAULT_ROOT
+    if root is None:
+        resolved = DEFAULT_ROOT
+    else:
+        text = str(root).strip()
+        if not text:
+            raise NotADirectoryError("Not a directory: ''")
+        resolved = Path(text).expanduser()
     if not resolved.is_dir():
         raise NotADirectoryError(f"Not a directory: {resolved}")
     return resolved
@@ -118,7 +147,12 @@ def iter_session_files(root: Path, include_subagents: bool = False) -> Iterator[
             continue
         if not include_subagents and SUBAGENT_DIR in path.relative_to(root).parts:
             continue
-        candidates.append((path.stat().st_mtime_ns, path))
+        try:
+            candidates.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            # A live session rotates and deletes transcripts while this scan runs. One file
+            # going away must not take the whole listing down.
+            continue
     for _, path in sorted(candidates, key=lambda item: (-item[0], str(item[1]))):
         yield path
 

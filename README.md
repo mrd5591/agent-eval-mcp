@@ -4,6 +4,7 @@ Measure what a coding agent actually did. Tool efficiency, loops, test outcomes,
 and cost, read out of session transcripts. Ships as a CLI and as an MCP server.
 
 ```bash
+uv venv --python 3.11
 uv pip install -e .
 
 agent-eval sessions                          # what sessions exist
@@ -111,9 +112,13 @@ So:
   which may be a whole file, is never carried into a finding, a report, or an MCP result. A test
   writes a fake credential three times and asserts it appears nowhere in any output.
 - **A repeated shell command is echoed** in its loop finding, because the command is what a reviewer
-  needs to see. That is the one place raw transcript text reaches the output.
-- **Tool results are truncated to 400 characters** and kept only because exit states and test
-  summaries have to be read out of them.
+  needs to see. That is the one place raw transcript text reaches the output, and it is capped at
+  400 characters. A command can carry content inline - a heredoc body, an `echo secret >` redirect -
+  so an uncapped echo would put a whole file in a finding. The cap bounds that. It does not make a
+  short secret written inline invisible, which is why the advice below is to grep the JSON.
+- **Tool results are truncated to 400 characters.** Nothing reads them today. They are retained for
+  the exit-state and test-summary parsing that `suite_events` still owes: it currently decides green
+  or red from the transport error flag alone, so a suite that fails while exiting 0 reads as green.
 - **Nothing is written to a transcript directory.** The parser opens files read-only, and there is
   no code path in the package that writes there.
 - **No real transcript is committed.** Every test fixture is hand-written synthetic JSONL, and the
@@ -195,11 +200,12 @@ clean on every metric here and still produce the wrong feature.
 ```bash
 uv venv --python 3.11
 uv pip install -e ".[dev]"
-pytest                 # 105 tests, coverage gate at 90%
+pytest                 # 113 tests, coverage floor at 95%
 ruff check . && ruff format --check .   # lint and format gates
 ```
 
-Built test-first. The coverage gate is in `pyproject.toml` and currently sits at 97%.
+Built test-first. The coverage floor is in `pyproject.toml` and sits at 95%; measured coverage is
+above it. The floor exists to notice a test file going dark, so it tracks the real figure closely.
 
 Tests are organized by module: transcript parsing, the analyses, rendering, the CLI, and the MCP
 surface. The MCP tests exercise the server's own dispatch rather than a stdio transport, because

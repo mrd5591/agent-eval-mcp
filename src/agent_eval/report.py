@@ -12,7 +12,7 @@ def _duration(ms: int) -> str:
     if ms <= 0:
         return "unknown"
     seconds = ms / 1000
-    if seconds < 90:
+    if seconds < 120:
         return f"{seconds:.0f}s"
     minutes = seconds / 60
     if minutes < 90:
