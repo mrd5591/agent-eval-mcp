@@ -1,10 +1,10 @@
-"""Parsing a session file into something worth measuring."""
+"""Parsing a session file."""
 
 from __future__ import annotations
 
 import pytest
 
-from agent_eval.transcript import ToolCall, parse_session, iter_session_files
+from agent_eval.transcript import ToolCall, iter_session_files, parse_session
 
 from . import fixtures as fx
 
@@ -47,7 +47,9 @@ def test_marks_failed_tool_results(tmp_path):
 
 
 def test_tool_call_without_result_is_unresolved(tmp_path):
-    path = fx.write_transcript(tmp_path / "s.jsonl", [fx.tool_use("Read", {"file_path": "x"}, "t9")])
+    path = fx.write_transcript(
+        tmp_path / "s.jsonl", [fx.tool_use("Read", {"file_path": "x"}, "t9")]
+    )
 
     call = parse_session(path).tool_calls[0]
 
@@ -128,12 +130,8 @@ def test_tool_call_signature_normalizes_whitespace_and_paths():
 
 
 def test_transcript_never_exposes_prompt_text(tmp_path):
-    path = fx.write_transcript(
-        tmp_path / "s.jsonl", [fx.user_message("my secret business plan")]
-    )
+    path = fx.write_transcript(tmp_path / "s.jsonl", [fx.user_message("my secret business plan")])
 
     session = parse_session(path)
 
-    # Human prompt content is counted, never retained. A tool that analyses
-    # transcripts must not become a second copy of them.
     assert "secret" not in repr(session)

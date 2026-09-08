@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -32,3 +33,10 @@ packages = ["src/agent_eval"]
 testpaths = ["tests"]
 addopts = "-q --cov=agent_eval --cov-report=term-missing --cov-fail-under=90"
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,10 +1,4 @@
-"""Render an Evaluation.
-
-Two formats. Text is for a person reading a terminal, so it leads with what is
-wrong and omits sections it has nothing to say about. JSON is for a machine, so it
-is complete and includes derived values rather than making the consumer recompute
-a failure rate the analysis already knows.
-"""
+"""Render an Evaluation as text or JSON."""
 
 from __future__ import annotations
 
@@ -27,7 +21,7 @@ def _duration(ms: int) -> str:
 
 
 def render_text(evaluation: Evaluation) -> str:
-    """A short report for a human. Findings first, because that is the point."""
+    """A short report for a human, findings first."""
     lines: list[str] = []
 
     lines.append(f"Session {evaluation.session_id or '(unknown)'}")
@@ -79,8 +73,7 @@ def render_text(evaluation: Evaluation) -> str:
         lines.append(f"  ${cost.total_usd:.2f} over {_duration(cost.duration_ms)}")
         if cost.usd_per_100_lines is not None:
             lines.append(
-                f"  {cost.lines_changed} lines changed, "
-                f"${cost.usd_per_100_lines:.2f} per 100 lines"
+                f"  {cost.lines_changed} lines changed, ${cost.usd_per_100_lines:.2f} per 100 lines"
             )
         if cost.models:
             lines.append(f"  models: {', '.join(cost.models)}")
@@ -91,7 +84,7 @@ def render_text(evaluation: Evaluation) -> str:
 
 
 def to_dict(evaluation: Evaluation) -> dict:
-    """The full evaluation, including values derived from properties."""
+    """The full evaluation, including derived values."""
     payload = asdict(evaluation)
     payload["tools"]["overall_failure_rate"] = evaluation.tools.overall_failure_rate
     for name, stat in evaluation.tools.by_tool.items():

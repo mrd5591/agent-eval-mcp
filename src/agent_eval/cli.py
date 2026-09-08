@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .metrics import evaluate
-from .report import render_json, render_text, to_dict
+from .report import render_json, render_text
 from .transcript import iter_session_files, parse_session
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"

@@ -1,9 +1,4 @@
-"""The analyses.
-
-Each function answers one question you would actually ask about a session, takes
-a parsed Session and returns a value. No I/O, no globals, so every one of them is
-testable against a handful of synthetic records.
-"""
+"""The analyses. Pure functions over a parsed Session."""
 
 from __future__ import annotations
 
@@ -12,12 +7,10 @@ from dataclasses import dataclass, field
 
 from .transcript import Session, ToolCall
 
-# Tools whose repetition is evidence of thrash. Reading the same file five times
-# is navigation; running the same failing build five times is a loop.
+# Repetition of a read-only tool is navigation, not thrash.
 _STATEFUL_TOOLS = frozenset({"Bash", "PowerShell", "Edit", "Write", "NotebookEdit"})
 
-# Anchored at the start of a command or after a shell separator, so "ls tests/"
-# does not count as a test run but "cd x && pytest" does.
+# Anchored so "ls tests/" does not match but "cd x && pytest" does.
 _TEST_RUNNER = re.compile(
     r"(?:^|[;&|]\s*)(?:"
     r"pytest|py\.test|tox|nox"
@@ -28,7 +21,6 @@ _TEST_RUNNER = re.compile(
     re.IGNORECASE,
 )
 
-# Permission postures where the agent was not being asked before acting.
 _UNPROMPTED_MODES = frozenset({"bypassPermissions", "auto", "acceptEdits", "dontAsk"})
 
 
@@ -103,7 +95,7 @@ class CostSummary:
 
 @dataclass
 class Evaluation:
-    """Everything, plus the short list of things worth a human's attention."""
+    """Every analysis, plus the findings list."""
 
     session_id: str
     path: str
@@ -131,14 +123,7 @@ def tool_usage(session: Session) -> ToolUsage:
 
 
 def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
-    """
-    Find stateful actions repeated at least `threshold` times.
-
-    Repetition is matched on the call signature rather than on adjacency: an agent
-    that alternates between the same failing build and the same failing edit is
-    looping just as surely as one that repeats a single command, and the
-    interleaving is what makes it hard to notice by eye.
-    """
+    """Find stateful actions repeated at least `threshold` times, matched on signature."""
     grouped: dict[str, list[ToolCall]] = {}
     for call in session.tool_calls:
         if call.name not in _STATEFUL_TOOLS:
@@ -198,7 +183,7 @@ def cost_summary(session: Session) -> CostSummary:
 def _findings(
     tools: ToolUsage, loops: list[Loop], tests: SuiteEvents, gates: GateEvents
 ) -> list[str]:
-    """The short list. Only things a reviewer should actually look at."""
+    """The short list a reviewer should look at."""
     findings: list[str] = []
 
     for loop in loops:

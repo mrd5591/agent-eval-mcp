@@ -1,10 +1,4 @@
-"""Synthetic transcripts.
-
-Every fixture here is written by hand. No real session data is committed to this
-repository, and the test suite never reads from a real transcript directory. That
-is a deliberate constraint: transcripts contain prompts, file contents and paths,
-and a tool whose job is to analyse them should not be the reason they leak.
-"""
+"""Synthetic transcripts. No real session data is committed or read by the suite."""
 
 from __future__ import annotations
 

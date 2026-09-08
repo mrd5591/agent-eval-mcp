@@ -1,10 +1,4 @@
-"""The MCP surface.
-
-Handlers are exercised through the server's own dispatch rather than over a stdio
-transport. What matters here is that each advertised tool exists, has a schema and
-a description a model can act on, returns readable JSON, and fails in a way the
-protocol layer can turn into an error result. Transport framing is the SDK's job.
-"""
+"""The MCP surface: tool advertisement, dispatch, and error shapes."""
 
 from __future__ import annotations
 
@@ -103,9 +97,7 @@ async def test_list_sessions_honours_the_limit(tmp_path):
     for name in ("a", "b", "c"):
         fx.write_transcript(tmp_path / "p" / f"{name}.jsonl", fx.simple_session())
 
-    result = await mcp_server.server.call_tool(
-        "list_sessions", {"root": str(tmp_path), "limit": 2}
-    )
+    result = await mcp_server.server.call_tool("list_sessions", {"root": str(tmp_path), "limit": 2})
 
     assert len(payload(result)) == 2
 
@@ -118,9 +110,7 @@ async def test_find_loops_reports_repetition(tmp_path):
         records.append(fx.tool_result(f"t{i}", "fail", is_error=True, uuid=f"r{i}"))
     path = fx.write_transcript(tmp_path / "s.jsonl", records)
 
-    result = await mcp_server.server.call_tool(
-        "find_loops", {"path": str(path), "threshold": 3}
-    )
+    result = await mcp_server.server.call_tool("find_loops", {"path": str(path), "threshold": 3})
 
     loops = payload(result)
     assert loops[0]["occurrences"] == 3
@@ -166,12 +156,8 @@ async def test_unknown_tool_is_rejected():
 
 @pytest.mark.anyio
 async def test_missing_transcript_is_a_readable_tool_error():
-    # The message has to name the path: a model that guessed wrong should be able
-    # to correct itself from the error alone.
     with pytest.raises(ToolError, match="Transcript not found"):
-        await mcp_server.server.call_tool(
-            "analyze_session", {"path": "/does/not/exist.jsonl"}
-        )
+        await mcp_server.server.call_tool("analyze_session", {"path": "/does/not/exist.jsonl"})
 
 
 @pytest.mark.anyio

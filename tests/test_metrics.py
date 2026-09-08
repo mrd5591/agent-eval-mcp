@@ -1,4 +1,4 @@
-"""The analyses. Each one answers a question you would actually ask about a session."""
+"""The analyses."""
 
 from __future__ import annotations
 
@@ -19,9 +19,6 @@ from . import fixtures as fx
 
 def session_from(tmp_path, records):
     return parse_session(fx.write_transcript(tmp_path / "s.jsonl", records))
-
-
-# --- tool usage -------------------------------------------------------------
 
 
 def test_tool_usage_counts_and_failure_rate(tmp_path):
@@ -51,9 +48,6 @@ def test_tool_usage_on_empty_session(tmp_path):
     assert usage.by_tool == {}
 
 
-# --- loops ------------------------------------------------------------------
-
-
 def test_detects_a_repeated_identical_call(tmp_path):
     records = []
     for i in range(3):
@@ -78,8 +72,6 @@ def test_repetition_below_threshold_is_not_a_loop(tmp_path):
 
 
 def test_reads_of_the_same_file_are_not_a_loop(tmp_path):
-    # Re-reading a file is normal navigation, not thrash. Only mutating and
-    # executing tools count, or every session looks pathological.
     records = []
     for i in range(5):
         records.append(fx.tool_use("Read", {"file_path": "/repo/a.py"}, f"t{i}", uuid=f"a{i}"))
@@ -97,9 +89,6 @@ def test_successful_repetition_is_reported_but_not_all_failed(tmp_path):
     loops = detect_loops(session_from(tmp_path, records), threshold=3)
 
     assert loops[0].all_failed is False
-
-
-# --- test events ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -157,9 +146,6 @@ def test_no_test_runs_means_unknown_not_green(tmp_path):
     assert events.ended_green is None
 
 
-# --- gates ------------------------------------------------------------------
-
-
 def test_reports_permission_mode_and_hook_blocks(tmp_path):
     records = [
         fx.permission_mode("bypassPermissions"),
@@ -180,11 +166,10 @@ def test_default_permission_mode_is_not_flagged(tmp_path):
     assert gates.hook_blocks == 0
 
 
-# --- cost -------------------------------------------------------------------
-
-
 def test_cost_per_changed_line(tmp_path):
-    session = session_from(tmp_path, [fx.cost_state(total_cost=3.0, lines_added=90, lines_removed=10)])
+    session = session_from(
+        tmp_path, [fx.cost_state(total_cost=3.0, lines_added=90, lines_removed=10)]
+    )
 
     summary = cost_summary(session)
 
@@ -194,12 +179,11 @@ def test_cost_per_changed_line(tmp_path):
 
 
 def test_cost_per_line_is_none_when_nothing_changed(tmp_path):
-    session = session_from(tmp_path, [fx.cost_state(total_cost=2.0, lines_added=0, lines_removed=0)])
+    session = session_from(
+        tmp_path, [fx.cost_state(total_cost=2.0, lines_added=0, lines_removed=0)]
+    )
 
     assert cost_summary(session).usd_per_100_lines is None
-
-
-# --- aggregate --------------------------------------------------------------
 
 
 def test_evaluate_assembles_every_section(tmp_path):
@@ -233,21 +217,17 @@ def test_findings_are_empty_for_a_clean_session(tmp_path):
     assert result.findings == []
 
 
-# --- regression: loop signatures for editing tools --------------------------
-#
-# Found by running the analyser over a real 7.7-hour session. Five separate edits
-# to one file were reported as a loop, because the Edit signature keyed on
-# file_path alone. Editing the same file repeatedly is ordinary iterative work;
-# only an identical repeated edit is thrash.
-
-
 def test_different_edits_to_the_same_file_are_not_a_loop(tmp_path):
     records = []
     for i in range(5):
         records.append(
             fx.tool_use(
                 "Edit",
-                {"file_path": "/repo/a.py", "old_string": f"before {i}", "new_string": f"after {i}"},
+                {
+                    "file_path": "/repo/a.py",
+                    "old_string": f"before {i}",
+                    "new_string": f"after {i}",
+                },
                 f"t{i}",
                 uuid=f"a{i}",
             )
@@ -282,7 +262,10 @@ def test_writes_of_different_content_to_one_path_are_not_a_loop(tmp_path):
     for i in range(4):
         records.append(
             fx.tool_use(
-                "Write", {"file_path": "/repo/b.py", "content": f"version {i}"}, f"t{i}", uuid=f"a{i}"
+                "Write",
+                {"file_path": "/repo/b.py", "content": f"version {i}"},
+                f"t{i}",
+                uuid=f"a{i}",
             )
         )
         records.append(fx.tool_result(f"t{i}", "ok", uuid=f"r{i}"))

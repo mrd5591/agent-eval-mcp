@@ -1,4 +1,4 @@
-"""Rendering. The report is the product, so its shape is tested like one."""
+"""Rendering."""
 
 from __future__ import annotations
 
@@ -59,8 +59,6 @@ def test_json_report_round_trips(tmp_path):
 def test_json_report_includes_derived_values(tmp_path):
     payload = json.loads(render_json(evaluation_from(tmp_path, fx.simple_session())))
 
-    # Derived properties are part of the contract; a consumer should not have to
-    # recompute a failure rate that the analysis already knows.
     assert "overall_failure_rate" in payload["tools"]
     assert "usd_per_100_lines" in payload["cost"]
 

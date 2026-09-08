@@ -160,6 +160,7 @@ clean on every metric here and still produce the wrong feature.
 uv venv --python 3.11
 uv pip install -e ".[dev]"
 pytest                 # 70 tests, coverage gate at 90%
+ruff check . && ruff format --check .   # lint and format gates
 ```
 
 Built test-first. The coverage gate is in `pyproject.toml` and currently sits at 97%.

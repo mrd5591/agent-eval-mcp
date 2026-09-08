@@ -1,12 +1,6 @@
 """MCP server exposing the analyses as tools.
 
-Why an MCP server and not only a CLI: the useful moment for this data is *inside* a
-session, when the question is "have I been going in circles for the last twenty
-minutes." A CLI answers that afterwards, to a human. An MCP tool answers it during,
-to the agent, which can then stop.
-
-Tool schemas are derived from the signatures and docstrings below, so the
-description a model reads and the behaviour it gets cannot drift apart.
+Tool schemas and descriptions are derived from the signatures and docstrings below.
 """
 
 from __future__ import annotations
@@ -38,12 +32,7 @@ server = MCPServer(
 
 
 def _load(path: str):
-    """Resolve and parse a transcript.
-
-    A missing file is an expected outcome when a model guesses a path, so it is
-    raised as a ToolError. That reaches the model as a readable error result it can
-    correct from, rather than as a server-side crash.
-    """
+    """Resolve and parse a transcript. A missing file is a ToolError the model can correct from."""
     resolved = Path(path)
     if not resolved.is_file():
         raise ToolError(f"Transcript not found: {resolved}")
@@ -135,9 +124,7 @@ def cost_report(root: str | None = None) -> dict[str, Any]:
         "sessions": count,
         "total_usd": round(total_usd, 4),
         "lines_changed": lines_changed,
-        "usd_per_100_lines": (
-            round(total_usd / lines_changed * 100, 4) if lines_changed else None
-        ),
+        "usd_per_100_lines": (round(total_usd / lines_changed * 100, 4) if lines_changed else None),
     }
 
 

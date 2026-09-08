@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from agent_eval.cli import main
 
 from . import fixtures as fx
