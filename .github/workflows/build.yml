@@ -17,19 +17,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
+      # setup-uv's python-version sets UV_PYTHON, so `uv venv` below actually
+      # builds against the matrix version. Installing with `--system` instead
+      # would silently use the runner's own interpreter, which both defeats the
+      # matrix and trips PEP 668 on Ubuntu.
+      - name: Install uv and Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
-        run: uv pip install --system -e ".[dev]"
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
 
       # The coverage floor lives in pyproject.toml, so it is the same number
       # locally and in CI. A gate that only exists in one place is a gate that
       # gets discovered late.
       - name: Test
-        run: pytest
+        run: uv run pytest
