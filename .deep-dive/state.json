@@ -1,0 +1,17 @@
+{
+  "lastRunCommit": "08cb9d1ece81b27737037e5e84f8a2a16c47f622",
+  "lastRunTimestamp": "2026-09-08T14:38:09Z",
+  "mode": "full",
+  "filesAnalyzed": 21,
+  "findingsCount": 34,
+  "coverageGaps": [
+    "Review agents were strictly READ-ONLY this pass: no reviewer executed a manufactured red, so every review-phase claim is source-reading plus scripted derivation, not observed behaviour. The lead ran all seven manufactured reds itself.",
+    "transcript.py: large-file and memory behaviour was reasoned, not measured - no profiling, no large-corpus run. Concurrency against a transcript being appended to mid-parse was not reached.",
+    "metrics.py: loop-detection false-POSITIVE shapes were not empirically explored beyond the pinned tests. is_test_run was sampled across roughly 110 command shapes, not exhaustively enumerated.",
+    "mcp_server.py: stdio transport under a real client was never exercised, only the SDK dispatch path. Permission-error paths were inspected, not executed.",
+    "README real-corpus figures (3,617 files, 211,062 tool calls, the loop and green/red table) are UNVERIFIABLE from the tree - no corpus, script, or recorded output is committed. Not checked, not disproven.",
+    "The two cross-repo README links were not fetched (no network check).",
+    "No GitHub Actions run was executed. The windows false-green conclusion rests on local pwsh 7.5.4 reproduction plus GitHub's documented default-shell contract."
+  ],
+  "notes": "First deep-dive run on this repo. Base was in sync with origin/main at branch time (0 ahead, 0 behind), so no staleness drift."
+}
