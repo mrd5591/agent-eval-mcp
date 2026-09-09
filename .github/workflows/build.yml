@@ -32,12 +32,18 @@ jobs:
       # claimed a reproducibility this job did not have, and `ruff>=0.16.6`
       # floated - a ruff release could turn CI red on an unchanged tree.
       #
-      # --frozen fails rather than silently re-resolving when the lock and
-      # pyproject.toml disagree, which is the whole point of having a lock.
+      # --locked, not --frozen. This job ran --frozen for its first weeks and the
+      # comment here claimed --frozen fails when the lock and pyproject.toml
+      # disagree. It does not: --frozen *skips* the freshness check and installs
+      # the lock as-is, while --locked is the flag that errors when the lock is
+      # out of sync with project metadata. Six Dependabot PRs bumped specifiers
+      # in pyproject.toml without regenerating uv.lock and every one of them
+      # passed green, because the gate that was supposed to catch exactly that
+      # had been told not to look.
       # `uv sync` creates the environment itself, so the explicit `uv venv` that
-      # setup-uv@v7 used to require is gone. Dependabot moves the lock.
+      # setup-uv@v7 used to require is gone.
       - name: Install from the lock
-        run: uv sync --all-extras --frozen
+        run: uv sync --all-extras --locked
 
       # Without an explicit bash shell, windows runners use pwsh, whose exit status is the LAST
       # command's - a failing `ruff check` would be a silent green on half the matrix.
@@ -69,10 +75,12 @@ jobs:
           python-version: "3.11"
 
       # The same lock as the test job, so what is audited is what is tested.
+      # --locked for the same reason it is used there: an audit of a stale lock
+      # is an audit of something this project does not declare.
       # pip-audit itself is a tool rather than a dependency of the project, so it
       # is the one thing installed outside the lock.
       - name: Install from the lock
-        run: uv sync --all-extras --frozen
+        run: uv sync --all-extras --locked
 
       - name: Install pip-audit
         run: uv pip install pip-audit
