@@ -5,7 +5,12 @@
 # surfaced it. A weekly scan reports that state; this proposes the fix.
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # "uv", not "pip". The pip ecosystem reads pyproject.toml and knows nothing
+  # about uv.lock, so its PRs moved the specifiers and left the lock behind -
+  # which CI then failed to notice. uv is the ecosystem that understands both
+  # files; where it still updates only one of them, `uv sync --locked` in CI
+  # turns that PR red instead of merging a lock that no longer matches.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
