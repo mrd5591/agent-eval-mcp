@@ -227,7 +227,7 @@ clean on every metric here and still produce the wrong feature.
 ```bash
 uv venv --python 3.11
 uv pip install -e ".[dev]"
-pytest                 # 113 tests, coverage floor at 95%
+pytest                 # 163 tests, coverage floor at 95%
 ruff check . && ruff format --check .   # lint and format gates
 ```
 
