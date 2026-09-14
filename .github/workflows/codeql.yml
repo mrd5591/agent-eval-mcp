@@ -18,11 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: python
 
       # No build step: Python needs none for extraction, and the package is
       # pure source. Installing dependencies would only add analysis surface
       # this repo does not own.
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
