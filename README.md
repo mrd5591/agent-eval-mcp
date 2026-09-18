@@ -56,7 +56,7 @@ Cost
 | Signal | What it answers |
 |---|---|
 | Tool usage | Where did the effort go, and which tools kept failing? |
-| Loops | Did it issue the same command or edit over and over? Read-only tools are excluded, because re-reading a file is navigation, not thrash. |
+| Loops | Did it issue the same command or edit over and over? Read-only tools are excluded, because re-reading a file is navigation, not thrash, and so are shell commands that change nothing (`sleep`, `echo`, `git status`) for the same reason. |
 | Test events | Did the suite run, how often did it fail, and did the session end green? |
 | Gates | What permission posture was it running under, and did a hook ever refuse a call? |
 | Cost | Total spend, and spend per 100 lines changed. |
@@ -132,9 +132,16 @@ sensitive; the tests do exactly that.
 
 ## Run against a real corpus
 
-The analyser was run over a personal archive of **3,542 transcript files** (611 top-level sessions
-plus the subagent transcripts they spawned) containing **208,035 tool calls**, in 27 seconds on a
-laptop:
+The analyser was run over a personal archive of **3,000+ transcript files** (several hundred
+top-level sessions plus the subagent transcripts they spawned) containing **200,000+ tool calls**,
+in 27 seconds on a laptop.
+
+The floors are deliberate. Transcripts rotate away and new ones arrive, so any exact figure here is
+stale within days; the table below is one dated measurement, not a standing claim. A re-run on
+**2026-09-17** gave 3,469 transcripts and 217,197 tool calls: fewer files than the 2026-09-08 set,
+more calls, because the sessions that aged out were lighter than the ones that replaced them.
+
+Measured 2026-09-08:
 
 | | Top-level sessions | Including subagents |
 |---|---|---|
@@ -190,10 +197,36 @@ either.
 
 ## Reading the numbers honestly
 
-**Loop detection is a heuristic.** Three identical `git status` calls is not a problem. The
+**A command that changes nothing is not a loop.** Repeating a read-only *tool* was already
+navigation rather than thrash; from 2026-09-17 the same holds one level down, for a shell command
+whose every segment is a no-op or a question: `true`, `sleep`, `echo`, `date`, `cd`, `ls`, `cat`,
+`grep`, `git status`, `git log`. One stateful segment anywhere makes the whole line count again, so
+`cd repo && git status && dotnet build` is still reported, and so is any redirect, because
+`echo secret > .env` writes a file while `echo secret` does not.
+
+This came out of running the tool on the archive rather than reading it. Of 468 loop findings,
+**three** had every attempt fail; the rest were overwhelmingly orchestrators polling with `sleep`
+and `echo` while they waited on background work. A count that large made the metric unreadable and
+buried the three. Measured over one snapshot of 3,470 transcripts, both implementations in the same
+pass:
+
+| | Sessions with a loop | Loop findings | Of those, every attempt failed |
+|---|---|---|---|
+| Before | 233 | 468 | 3 |
+| After | 167 | 298 | 3 |
+
+The findings that matter are all still there. What went is noise.
+
+**What still gets through:** a shell `until`/`while ... do ... done` polling construct is reported,
+because its head is `until` or `while` rather than a program this can classify, and reading control
+flow is a different job from reading a command. That is the next obvious improvement, alongside the
+time window below.
+
+**Loop detection is a heuristic.** Three identical `npm run build` calls may be fine. The
 threshold is a parameter (`--loop-threshold`) because the right value depends on your work. What the
 tool is actually good at is surfacing *failing* repetition, which is why `all_failed` is reported
-separately.
+separately, and why the quiet-command rule above matters: it is the difference between three
+findings worth reading and 468 nobody will.
 
 **Loops are counted across the whole session, not within a time window.** The same command run four
 times over seven hours reads the same as four times in five minutes, and the first is usually fine.

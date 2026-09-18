@@ -63,9 +63,11 @@ def test_detects_a_repeated_identical_call(tmp_path):
 
 
 def test_repetition_below_threshold_is_not_a_loop(tmp_path):
+    # Deliberately a stateful command: with `ls` here this test would pass for the wrong reason,
+    # since query-only commands are never loops whatever the count.
     records = []
     for i in range(2):
-        records.append(fx.tool_use("Bash", {"command": "ls"}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_use("Bash", {"command": "npm run build"}, f"t{i}", uuid=f"a{i}"))
         records.append(fx.tool_result(f"t{i}", "ok", uuid=f"r{i}"))
 
     assert detect_loops(session_from(tmp_path, records), threshold=3) == []
@@ -81,10 +83,13 @@ def test_reads_of_the_same_file_are_not_a_loop(tmp_path):
 
 
 def test_successful_repetition_is_reported_but_not_all_failed(tmp_path):
+    # `git status` until 2026-09-17, when query-only commands stopped counting as loops. The
+    # command here is incidental; what is under test is that a loop whose calls all SUCCEEDED is
+    # still reported, with all_failed False.
     records = []
     for i in range(3):
-        records.append(fx.tool_use("Bash", {"command": "git status"}, f"t{i}", uuid=f"a{i}"))
-        records.append(fx.tool_result(f"t{i}", "clean", uuid=f"r{i}"))
+        records.append(fx.tool_use("Bash", {"command": "git add -A"}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "", uuid=f"r{i}"))
 
     loops = detect_loops(session_from(tmp_path, records), threshold=3)
 
@@ -269,5 +274,95 @@ def test_writes_of_different_content_to_one_path_are_not_a_loop(tmp_path):
             )
         )
         records.append(fx.tool_result(f"t{i}", "ok", uuid=f"r{i}"))
+
+    assert detect_loops(session_from(tmp_path, records), threshold=3) == []
+
+
+def test_a_repeated_wait_command_is_not_a_loop(tmp_path):
+    """An orchestrator polling with `sleep` is waiting, not thrashing."""
+    records = []
+    for i in range(5):
+        records.append(fx.tool_use("Bash", {"command": "sleep 1"}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "", uuid=f"r{i}"))
+
+    assert detect_loops(session_from(tmp_path, records), threshold=3) == []
+
+
+def test_a_repeated_echo_heartbeat_is_not_a_loop(tmp_path):
+    """`echo` changes nothing; repeating it is a heartbeat while waiting on other work."""
+    records = []
+    for i in range(5):
+        records.append(
+            fx.tool_use(
+                "Bash", {"command": 'echo "still waiting for review"'}, f"t{i}", uuid=f"a{i}"
+            )
+        )
+        records.append(fx.tool_result(f"t{i}", "still waiting for review", uuid=f"r{i}"))
+
+    assert detect_loops(session_from(tmp_path, records), threshold=3) == []
+
+
+def test_a_repeated_query_only_command_is_not_a_loop(tmp_path):
+    """Re-running `git status` is navigation, exactly as re-reading a file is."""
+    records = []
+    for i in range(5):
+        records.append(
+            fx.tool_use("Bash", {"command": "git status --short"}, f"t{i}", uuid=f"a{i}")
+        )
+        records.append(fx.tool_result(f"t{i}", "", uuid=f"r{i}"))
+
+    assert detect_loops(session_from(tmp_path, records), threshold=3) == []
+
+
+def test_a_stateful_command_after_a_query_only_one_is_still_a_loop(tmp_path):
+    """`cd` and `git status` are quiet, but a build in the same line is not."""
+    command = 'cd "/repo" && git status --short && dotnet build'
+    records = []
+    for i in range(3):
+        records.append(fx.tool_use("Bash", {"command": command}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "error", is_error=True, uuid=f"r{i}"))
+
+    loops = detect_loops(session_from(tmp_path, records), threshold=3)
+
+    assert len(loops) == 1
+    assert loops[0].occurrences == 3
+    assert loops[0].all_failed is True
+
+
+def test_a_repeated_mutating_git_command_is_still_a_loop(tmp_path):
+    """`git status` is a question; `git add` changes the index."""
+    records = []
+    for i in range(3):
+        records.append(fx.tool_use("Bash", {"command": "git add -A"}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "", uuid=f"r{i}"))
+
+    assert len(detect_loops(session_from(tmp_path, records), threshold=3)) == 1
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "secret" > /repo/.env',
+        "echo done >> /repo/log.txt",
+        "cat /repo/a.txt > /repo/b.txt",
+        "git status --short > /repo/status.txt",
+    ],
+)
+def test_a_quiet_program_that_redirects_is_still_a_loop(tmp_path, command):
+    """`echo` changes nothing until it writes to a file. The redirect is the whole difference."""
+    records = []
+    for i in range(3):
+        records.append(fx.tool_use("Bash", {"command": command}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "", uuid=f"r{i}"))
+
+    assert len(detect_loops(session_from(tmp_path, records), threshold=3)) == 1
+
+
+def test_an_env_prefixed_wait_is_not_a_loop(tmp_path):
+    """The env assignment strips to nothing; the `sleep` in the next segment still decides."""
+    records = []
+    for i in range(4):
+        records.append(fx.tool_use("Bash", {"command": "TZ=UTC && sleep 2"}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_result(f"t{i}", "", uuid=f"r{i}"))
 
     assert detect_loops(session_from(tmp_path, records), threshold=3) == []
