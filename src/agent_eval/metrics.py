@@ -14,6 +14,83 @@ from .transcript import Session, ToolCall, parse_session, read_cost
 # Repetition of a read-only tool is navigation, not thrash.
 _STATEFUL_TOOLS = frozenset({"Bash", "PowerShell", "Edit", "Write", "NotebookEdit"})
 
+# The same argument, one level down. A shell tool is stateful in general, but most of what an agent
+# actually repeats through it changes nothing: `sleep` and `true` while it waits on background work,
+# `echo` as a heartbeat, `git status` and `ls` to see where it is. Measured over a 3,470-transcript
+# archive on 2026-09-17, 468 loop findings were raised and only 3 had every attempt fail; the rest
+# were overwhelmingly orchestrators polling. Counting those as loops buries the ones that matter, so
+# a command whose every segment is one of these is treated like a Read: navigation, not thrash.
+_QUIET_PROGRAMS = frozenset(
+    {
+        # do nothing, or wait
+        "true",
+        ":",
+        "false",
+        "sleep",
+        "wait",
+        "echo",
+        "printf",
+        "date",
+        "cd",
+        "pushd",
+        "popd",
+        # ask where we are
+        "pwd",
+        "ls",
+        "dir",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "stat",
+        "file",
+        "du",
+        "df",
+        "find",
+        "grep",
+        "rg",
+        "which",
+        "where",
+        "whoami",
+        "hostname",
+        "env",
+        "printenv",
+        "ps",
+        "uname",
+        "tree",
+        "realpath",
+        "basename",
+        "dirname",
+        # ask git a question
+        "git-status",
+        "git-log",
+        "git-diff",
+        "git-show",
+        "git-branch",
+        "git-rev-parse",
+        "git-describe",
+        "git-remote",
+        "git-config",
+        "git-ls-files",
+        "git-blame",
+        # PowerShell equivalents
+        "get-content",
+        "get-childitem",
+        "get-location",
+        "get-date",
+        "get-process",
+        "select-string",
+        "write-output",
+        "write-host",
+        "start-sleep",
+        "test-path",
+    }
+)
+
+# `git` alone says nothing: `git status` is a question and `git add` is not. The subcommand decides,
+# so git is looked up as `git-<subcommand>` above rather than by its own name.
+_SUBCOMMAND_PROGRAMS = frozenset({"git"})
+
 MIN_LOOP_THRESHOLD = 2
 
 _UNPROMPTED_MODES = frozenset({"bypassPermissions", "auto", "acceptEdits", "dontAsk"})
@@ -291,6 +368,8 @@ def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
     for call in session.tool_calls:
         if call.name not in _STATEFUL_TOOLS:
             continue
+        if _is_quiet_command(call.command):
+            continue
         grouped.setdefault(call.signature, []).append(call)
 
     loops = [
@@ -304,6 +383,39 @@ def detect_loops(session: Session, threshold: int = 3) -> list[Loop]:
         if len(calls) >= threshold
     ]
     return sorted(loops, key=lambda loop: (-loop.occurrences, loop.signature))
+
+
+def _is_quiet_command(command: str) -> bool:
+    """Whether a shell command changes nothing, so repeating it is navigation.
+
+    Every segment has to be quiet. One build in a `cd && git status && dotnet build` chain makes the
+    whole line stateful, which is the case that keeps a genuine build loop visible. An empty or
+    unparseable command is not quiet: nothing is known about it, and the safe default is to report.
+
+    A redirect disqualifies the whole segment, because it is what turns a quiet program into a
+    write: `echo secret > .env` creates a file and `echo secret` does not. That is deliberately
+    blunt - it also catches `2>&1`, which redirects a stream and writes nothing - and blunt in the
+    safe direction, since the cost is reporting a loop nobody needed rather than hiding one.
+    """
+    if not command.strip():
+        return False
+
+    saw_segment = False
+    for segment in _segments(command):
+        if any(">" in token for token in segment):
+            return False
+        tokens = _strip_wrappers(list(segment))
+        if not tokens:
+            continue
+        saw_segment = True
+        program = _program(tokens[0])
+        if program in _SUBCOMMAND_PROGRAMS:
+            subcommand = next((t for t in tokens[1:] if not t.startswith("-")), "")
+            program = f"{program}-{subcommand.lower()}"
+        if program not in _QUIET_PROGRAMS:
+            return False
+
+    return saw_segment
 
 
 def _is_break(token: str) -> bool:

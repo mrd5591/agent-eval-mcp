@@ -332,7 +332,9 @@ def test_echoed_command_is_capped_so_an_inline_body_cannot_fill_a_finding(tmp_pa
 
 
 def test_two_long_commands_sharing_a_prefix_stay_distinct(tmp_path):
-    prefix = "echo " + "x" * COMMAND_SNIPPET_CHARS
+    # `echo` until 2026-09-17, when query-only commands stopped counting as loops. What is under
+    # test is signature truncation, so the program only has to be one that still counts.
+    prefix = "npm run build -- " + "x" * COMMAND_SNIPPET_CHARS
     records = _repeated_bash(tmp_path, f"{prefix} alpha")
     records += _repeated_bash(tmp_path, f"{prefix} beta", start=3)
     session = parse_session(fx.write_transcript(tmp_path / "s.jsonl", records))

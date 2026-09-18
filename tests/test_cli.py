@@ -78,7 +78,7 @@ def test_no_command_prints_help(capsys):
 def test_loop_threshold_is_configurable(tmp_path, capsys):
     records = []
     for i in range(3):
-        records.append(fx.tool_use("Bash", {"command": "ls"}, f"t{i}", uuid=f"a{i}"))
+        records.append(fx.tool_use("Bash", {"command": "npm run build"}, f"t{i}", uuid=f"a{i}"))
         records.append(fx.tool_result(f"t{i}", "ok", uuid=f"r{i}"))
     path = fx.write_transcript(tmp_path / "s.jsonl", records)
 
